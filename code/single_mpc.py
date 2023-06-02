@@ -196,7 +196,7 @@ def main():
     T = 10
     s_goal = np.array([11, 20, np.pi/2]) 
     s1_init = np.array([16, 15.5, np.pi])
-    s2_init = np.array([17, 21, np.pi])
+    s2_init = np.array([15, 15.3, np.pi])
 
     L = 2 # car width (approx. as a circle)
     vm = 10 # maximum velocity
