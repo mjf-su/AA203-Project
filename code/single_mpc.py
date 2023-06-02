@@ -142,20 +142,17 @@ class MPC:
             Ab, __, cb = affinize(lambda s, __ : self.inner_boundary(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) # Inner boundary (boundary 1)
             Ab, cb = np.array(Ab), np.array(cb)
 
-            Ac, __, cc = affinize(lambda s, __ : self.v1_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) if v1 else affinize(lambda s, __ : self.v2_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:])))
-            Ac, cc = np.array(Ac), np.array(cc)
-
             cost = cp.quad_form(s_mpc[-1]-self.s_goal, self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
-            
+            cost += cp.sum(cp.square(cp.inv_pos(s_mpc[:, :2] - self.v1pos[None, :]))) if v1 else cp.sum(cp.square(cp.inv_pos(s_mpc[:, :2] - self.v2pos[None, :])))
+
             cons = [s_mpc[0] == s0] # IC
             cons += [cp.abs(a_mpc[:, 0]) <= self.vm] + [cp.abs(a_mpc[:, 1]) <= self.pm] # Control space
             cons += [s_mpc[i+1] == Ad[i] @ s_mpc[i] + Bd[i] @ a_mpc[i] + cd[i] for i in np.arange(self.N)] # Dynamics
             cons += [Ab[i] @ s_mpc[i] + cb[i] >= 0 for i in np.arange(self.N+1)] # Track limtis 
-            cons += [Ac[i] @ s_mpc[i] + cc[i] >= 0 for i in np.arange(self.N+1)] # Collision constraint
             cons += [cp.norm_inf(s_mpc - s_prev) <= p] + [cp.abs(a_mpc - a_prev) <= np.array([[1, 0.2]])] # Trust regions
 
             prob = cp.Problem(cp.Minimize(cost), cons)
-            prob.solve(solver = cp.ECOS)
+            prob.solve(solver = cp.SCS)
 
             if prob.status == "optimal" or prob.status == "optimal_inaccurate":
                 s_prev = s_mpc.value
@@ -201,12 +198,19 @@ class MPC:
             s1[k], a1[k], solve1 = self.scp(s_mpc1, a_mpc1, s01.value, v1 = True) # rollout vehicle 1
             s2[k], a2[k], solve2 = self.scp(s_mpc2, a_mpc2, s02.value, v1 = False) # rollout vehicle 2
 
-            
             s01.value = np.array(self.dynamics(s01.value, a1[k, 0])) if solve1 else s01.value # execute dynamics
             s02.value = np.array(self.dynamics(s02.value, a2[k, 0])) if solve2 else s02.value
 
             if not solve1 or not solve2:
                 print("CVXPY failed: infeasible solution at step " + str(k))
+                break
+            elif np.linalg.norm(s01.value - s02.value) < self.L: # Collision!
+                s1 = s1[:k]
+                a1 = a1[:k]
+                s2 = s2[:k]
+                a2 = a2[:k]
+
+                print("Vehicle Collision at step " + str(k))
                 break
             else:
                 print("Vehicle1: ", s01.value, " Vehicle2: ", s02.value)
