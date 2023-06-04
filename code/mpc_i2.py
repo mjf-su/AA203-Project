@@ -151,8 +151,13 @@ class MPC:
         fig, ax = plt.subplots()
 
         # Visualize data
-        ax.plot(s1[:, 0, 0], s1[:, 0, 1], 'r', label = "path1")
-        ax.plot(s2[:, 0, 0], s2[:, 0, 1], 'g', label = "path2")
+        for i in np.arange(s1.shape[0]-1):
+            # ax.plot(s1[:, 0, 0], s1[:, 0, 1], 'r', label = "vehicle1")
+            # ax.plot(s2[:, 0, 0], s2[:, 0, 1], 'g', label = "vehicle2")
+            ax.add_patch(plt.Circle((s1[i, 0, 0], s1[i, 0, 1]), self.L/2, color = 'lightcoral'))
+            ax.add_patch(plt.Circle((s2[i, 0, 0], s2[i, 0, 1]), self.L/2, color = 'lime'))
+        ax.add_patch(plt.Circle((s1[-1, 0, 0], s1[-1, 0, 1]), self.L/2, color = 'r', label = "vehicle1"))
+        ax.add_patch(plt.Circle((s2[-1, 0, 0], s2[-1, 0, 1]), self.L/2, color = 'g', label = "vehicle2"))
         ax.plot(self.s_goal[0], self.s_goal[1], '*k', label = "goal")
         ax.plot(s1[-1, :, 0], s1[-1, :, 1], '--', color = 'k')
         ax.plot(s2[-1, :, 0], s2[-1, :, 1], '--', color = 'k')
@@ -161,7 +166,12 @@ class MPC:
         ax.set_xlabel("x")
         ax.set_ylabel("y")
         ax.add_patch(plt.Circle(np.array(self.circle.center), self.circle.rad, color = 'b'))
-        ax.legend()
+        ax.add_patch(plt.Rectangle((3.5, 5), 3, 3, color = 'b'))
+        ax.add_patch(plt.Rectangle((5, 3.5), 2, 3, color = 'b'))
+        ax.add_patch(plt.Rectangle((5, 5), 2, 3, color = 'b'))
+        ax.set_xlim(2, 7)
+        ax.set_ylim(2, 8)
+        ax.legend(loc = "upper right")
 
         fig.savefig("./traj.png")
         plt.close()
@@ -290,7 +300,7 @@ def main():
     T = 10
     s_goal = np.array([2.75, 6, np.pi/2]) 
     s1_init = np.array([6, 3.125, np.pi])
-    s2_init = np.array([6, 2.5, np.pi])
+    s2_init = np.array([5.5, 2.5, np.pi])
 
     L = 1/2 # car width (approx. as a circle)
     vm = 10 # maximum velocity
