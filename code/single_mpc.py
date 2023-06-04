@@ -86,7 +86,7 @@ class MPC:
         ])
         return ds
     
-    def v1_penalty(self, s):
+    def v1_coll(self, s):
         assert self.v2pos is not None
         tol = 1/10
 
@@ -95,7 +95,7 @@ class MPC:
         ])
         return dc
     
-    def v2_penalty(self, s):
+    def v2_coll(self, s):
         assert self.v1pos is not None
         tol = 1/10
 
@@ -104,6 +104,46 @@ class MPC:
         ])
         return dc
     
+    def v1_penalty(self, s):
+        ds = jnp.array([
+            jnp.linalg.norm(s[:2] - self.v2pos)
+        ])
+        return ds
+    
+    def v2_penalty(self, s):
+        ds = jnp.array([
+            jnp.linalg.norm(s[:2] - self.v1pos)
+        ])
+        return ds
+
+    def leader(self):
+        v1cc = np.array(self.v1pos - self.circle.center)
+        v1s1 = 7 - np.clip(self.v1pos[0], 5, 7)
+        v1s2 = np.clip(self.v1pos[1], 5, 6.5) - 5
+        if v1cc[0] < 0:
+            if v1cc[1] < 0:
+                v1c = self.circle.rad*np.arctan(v1cc[0] / v1cc[1])
+            else:
+                v1c = self.circle.rad*np.pi/2
+        else:
+            v1c = 0
+
+        v2cc = np.array(self.v2pos - self.circle.center)
+        v2s1 = 7 - np.clip(self.v2pos[0], 5, 7)
+        v2s2 = np.clip(self.v2pos[1], 5, 6.5) - 5
+        if v2cc[0] < 0: 
+            if v2cc[1] < 0:
+                v2c = self.circle.rad*np.arctan(v2cc[0] / v2cc[1])
+            else:
+                v2c = self.circle.rad*np.pi/2
+        else:
+            v2c = 0
+
+        if v2s1 + v2c + v2s2 < v1s1 + v1c + v1s2:
+            return 1
+        else:
+            return 2
+
     def visualize(self, s1, a1, s2, a2):
         """
         Visualize executed MPC path with goal and track boundary.
@@ -124,8 +164,9 @@ class MPC:
         ax.legend()
 
         fig.savefig("./traj.png")
+        plt.close()
 
-    def scp(self, s_mpc, a_mpc, s0, v1, p = 0.2, Nscp = 5):
+    def scp(self, s_mpc, a_mpc, s0, v1, ahead, p = 0.2, Nscp = 5):
         solve = True
 
         # --------- Zero Init. ----------
@@ -139,17 +180,29 @@ class MPC:
             Ad, Bd, cd = affinize(self.dynamics, s_prev[:-1], a_prev) # Dynamics
             Ad, Bd, cd = np.array(Ad), np.array(Bd), np.array(cd)
 
-            Ab, __, cb = affinize(lambda s, __ : self.inner_boundary(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) # Inner boundary (boundary 1)
+            Ab, __, cb = affinize(lambda s, __ : self.inner_boundary(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) # Track boundary
             Ab, cb = np.array(Ab), np.array(cb)
 
-            cost = cp.quad_form(s_mpc[-1]-self.s_goal, self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
-            cost += cp.sum(cp.square(cp.inv_pos(s_mpc[:, :2] - self.v1pos[None, :]))) if v1 else cp.sum(cp.square(cp.inv_pos(s_mpc[:, :2] - self.v2pos[None, :])))
+            Ac, __, cc = affinize(lambda s, __ : self.v1_coll(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) if v1 else affinize(lambda s, __ : self.v2_coll(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) # Collision 
+            Ac, cc = np.array(Ac), np.array(cc)
 
+            Ar, __, cr = affinize(lambda s, __ : self.v1_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) if v1 else affinize(lambda s, __ : self.v2_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:])))
+            Ar, cr = np.array(Ar), np.array(cr)
+
+            cost = cp.quad_form(s_mpc[-1]-self.s_goal, self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
+            
             cons = [s_mpc[0] == s0] # IC
             cons += [cp.abs(a_mpc[:, 0]) <= self.vm] + [cp.abs(a_mpc[:, 1]) <= self.pm] # Control space
             cons += [s_mpc[i+1] == Ad[i] @ s_mpc[i] + Bd[i] @ a_mpc[i] + cd[i] for i in np.arange(self.N)] # Dynamics
             cons += [Ab[i] @ s_mpc[i] + cb[i] >= 0 for i in np.arange(self.N+1)] # Track limtis 
+            cons += [Ac[i] @ s_mpc[i] + cc[i] >= 0 for i in np.arange(self.N+1)] # Collision Constraint
             cons += [cp.norm_inf(s_mpc - s_prev) <= p] + [cp.abs(a_mpc - a_prev) <= np.array([[1, 0.2]])] # Trust regions
+
+            # Encourage increasing lead, decreasing trailing distance
+            if ahead:
+                cost -= 5e1*cp.sum([Ar[i] @ s_mpc[i] + cr[i] for i in np.arange(self.N+1)])
+            else:
+                cost += 2.5e2*cp.sum([Ar[i] @ s_mpc[i] + cr[i] for i in np.arange(self.N+1)]) 
 
             prob = cp.Problem(cp.Minimize(cost), cons)
             prob.solve(solver = cp.SCS)
@@ -171,11 +224,8 @@ class MPC:
         s01 = cp.Parameter(n,); s01.value = s1_init
         s02 = cp.Parameter(n,); s02.value = s2_init
 
-        s_mpc1 = cp.Variable((self.N+1, n)) # mpc variables
-        a_mpc1 = cp.Variable((self.N, m))
-
-        s_mpc2 = cp.Variable((self.N+1, n)) # mpc variables
-        a_mpc2 = cp.Variable((self.N, m))
+        s_mpc = cp.Variable((self.N+1, n)) # mpc variables
+        a_mpc = cp.Variable((self.N, m))
 
         s1 = np.zeros((sim_steps, self.N+1, n)) # car 1: table for all mpc sims
         a1 = np.zeros((sim_steps, self.N, m))
@@ -194,12 +244,25 @@ class MPC:
 
             self.v1pos = s01.value[:2] # store xy pos for collision check
             self.v2pos = s02.value[:2] 
+            leader = self.leader()
 
-            s1[k], a1[k], solve1 = self.scp(s_mpc1, a_mpc1, s01.value, v1 = True) # rollout vehicle 1
-            s2[k], a2[k], solve2 = self.scp(s_mpc2, a_mpc2, s02.value, v1 = False) # rollout vehicle 2
+            s1[k], a1[k], solve1 = self.scp(
+                s_mpc, 
+                a_mpc, 
+                s01.value,
+                v1 = True,
+                ahead = leader == 1) # rollout vehicle 1
+            s2[k], a2[k], solve2 = self.scp(
+                s_mpc, 
+                a_mpc, 
+                s02.value,
+                v1 = False,
+                ahead = leader == 2) # rollout vehicle 2
 
             s01.value = np.array(self.dynamics(s01.value, a1[k, 0])) if solve1 else s01.value # execute dynamics
             s02.value = np.array(self.dynamics(s02.value, a2[k, 0])) if solve2 else s02.value
+            if k > 0:
+                self.visualize(s1[:k], a1[:k], s2[:k], a2[:k])
 
             if not solve1 or not solve2:
                 print("CVXPY failed: infeasible solution at step " + str(k))
@@ -219,17 +282,17 @@ class MPC:
 def main():
     n = 3 # state, control dimension 
     m = 2
-    P = 1e3*np.eye(n) # cost-to-go approx.
+    P = 2e4*np.eye(n) # cost-to-go approx.
     Q = np.eye(n) # state stage cost
     R = np.eye(m) # control stage cost
 
     N = 30
     T = 10
-    s_goal = np.array([11, 20, np.pi/2]) 
-    s1_init = np.array([16, 15.5, np.pi])
-    s2_init = np.array([15, 13, np.pi])
+    s_goal = np.array([2.75, 6, np.pi/2]) 
+    s1_init = np.array([6, 3.125, np.pi])
+    s2_init = np.array([6, 2.5, np.pi])
 
-    L = 2 # car width (approx. as a circle)
+    L = 1/2 # car width (approx. as a circle)
     vm = 10 # maximum velocity
     pm = np.pi/4 # maximum steering angle
     
@@ -238,7 +301,7 @@ def main():
     # Configure optimization
     mpc.set_time(T, dt = 0.01)
     mpc.set_dynamics(vm, pm, L)
-    mpc.track_circle(14, 18, 1.5)
+    mpc.track_circle(5, 5, 1.5)
 
     # Execute
     mpc.do_mpc(s1_init, s2_init)
