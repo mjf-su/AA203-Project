@@ -104,15 +104,15 @@ class MPC:
         ])
         return dc
     
-    def v1_penalty(self, s):
+    def ahead_penalty(self, s):
         ds = jnp.array([
-            jnp.linalg.norm(s[:2] - self.v2pos)
+            jnp.linalg.norm(s[:2] - self.trail)
         ])
         return ds
     
-    def v2_penalty(self, s):
+    def trail_penalty(self, s):
         ds = jnp.array([
-            jnp.linalg.norm(s[:2] - self.v1pos)
+            jnp.linalg.norm(s[:2] - self.trail + 1e-5) # encourage movement from trailing position
         ])
         return ds
 
@@ -196,10 +196,10 @@ class MPC:
             Ac, __, cc = affinize(lambda s, __ : self.v1_coll(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) if v1 else affinize(lambda s, __ : self.v2_coll(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) # Collision 
             Ac, cc = np.array(Ac), np.array(cc)
 
-            Ar, __, cr = affinize(lambda s, __ : self.v1_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) if v1 else affinize(lambda s, __ : self.v2_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:])))
+            Ar, __, cr = affinize(lambda s, __ : self.ahead_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:]))) if ahead else affinize(lambda s, __ : self.trail_penalty(s), s_prev, jnp.concatenate((a_prev, a_prev[-1:])))
             Ar, cr = np.array(Ar), np.array(cr)
 
-            cost = cp.quad_form(s_mpc[-1]-self.s_goal, self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
+            #cost = cp.quad_form(s_mpc[-1]-self.s_goal, self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
             
             cons = [s_mpc[0] == s0] # IC
             cons += [cp.abs(a_mpc[:, 0]) <= self.vm] + [cp.abs(a_mpc[:, 1]) <= self.pm] # Control space
@@ -210,9 +210,12 @@ class MPC:
 
             # Encourage increasing lead, decreasing trailing distance
             if ahead:
-                cost -= 5e1*cp.sum([Ar[i] @ s_mpc[i] + cr[i] for i in np.arange(self.N+1)])
+                cost = cp.quad_form(s_mpc[-1]-self.s_goal, self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
+                cost -= cp.sum([Ar[i] @ s_mpc[i] + cr[i] for i in np.arange(self.N+1)])
+
             else:
-                cost += 2.5e2*cp.sum([Ar[i] @ s_mpc[i] + cr[i] for i in np.arange(self.N+1)]) 
+                cost = cp.quad_form(s_mpc[-1]-self.s_goal, 100*self.P) + cp.sum([cp.quad_form(s_mpc[i]-self.s_goal, self.Q) + cp.quad_form(a_mpc[i], self.R) for i in np.arange(self.N)])
+                cost -= 1e-2*cp.sum([Ar[i] @ s_mpc[i] + cr[i] for i in np.arange(self.N+1)]) 
 
             prob = cp.Problem(cp.Minimize(cost), cons)
             prob.solve(solver = cp.SCS)
@@ -255,6 +258,13 @@ class MPC:
             self.v1pos = s01.value[:2] # store xy pos for collision check
             self.v2pos = s02.value[:2] 
             leader = self.leader()
+            
+            if leader == 1:
+                self.lead = self.v1pos
+                self.trail = self.v2pos
+            else:
+                self.lead = self.v2pos
+                self.trail = self.v1pos
 
             s1[k], a1[k], solve1 = self.scp(
                 s_mpc, 
@@ -300,7 +310,7 @@ def main():
     T = 10
     s_goal = np.array([2.75, 6, np.pi/2]) 
     s1_init = np.array([6, 3.125, np.pi])
-    s2_init = np.array([5.5, 2.5, np.pi])
+    s2_init = np.array([6, 2.5, np.pi])
 
     L = 1/2 # car width (approx. as a circle)
     vm = 10 # maximum velocity
