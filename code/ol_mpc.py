@@ -290,8 +290,8 @@ def main():
     N = 30
     T = 10
     s_goal = np.array([2.75, 6, np.pi/2]) 
-    s1_init = np.array([5.5, 3.125, np.pi])
-    s2_init = np.array([6, 2.5, np.pi])
+    s1_init = np.array([6, 3.125, np.pi])
+    s2_init = np.array([5.4, 2.5, np.pi])
 
     L = 1/2 # car width (approx. as a circle)
     vm = 10 # maximum velocity
